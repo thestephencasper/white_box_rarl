@@ -1,0 +1,7 @@
+numpy
+matplotlib
+gym==0.19.0
+patchelf
+mujoco-py>=2.1
+stable-baselines3
+torch
