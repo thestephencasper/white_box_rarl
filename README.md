@@ -10,6 +10,8 @@ Set up [mujoco-py](https://github.com/openai/mujoco-py).
 
 ```
 python -m pip install -r requirements.txt
+mkdir models
+mkdir results
 bash wbrarl_run.sh
 python wbrarl_plotting.py
 ```
