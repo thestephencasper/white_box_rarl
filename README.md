@@ -1,12 +1,21 @@
 # White-Box Adversarial Policies in Deep Reinforcement Learning
 
-This repository contains code for White-Box RARL experiments from the paper, White-Box Adversarial Policies in Deep Reinforcement Learning (Casper et al., 2022)
+This repository contains code for White-Box RARL experiments from the paper, [White-Box Adversarial Policies in Deep Reinforcement Learning](https://arxiv.org/abs/2209.02167) (Casper et al., 2022)
 
-Paper link and bibtex coming soon...
+```
+@article{casper2022white,
+  title={White-Box Adversarial Policies in Deep Reinforcement Learning},
+  author={Casper, Stephen and Hadfield-Menell, Dylan and Kreiman, Gabriel},
+  journal={arXiv preprint arXiv:2209.02167},
+  year={2022}
+}
+```
 
 ## Instructions
 
 Set up [mujoco-py](https://github.com/openai/mujoco-py).
+
+Then run
 
 ```
 python -m pip install -r requirements.txt
