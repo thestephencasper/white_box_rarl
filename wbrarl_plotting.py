@@ -1,4 +1,3 @@
-
 from pathlib import Path
 import numpy as np
 import pickle
@@ -10,15 +9,20 @@ rc('font', **{'family': 'serif', 'serif': ['Palatino']})
 plt.rcParams['pdf.fonttype'] = 42
 
 results_path = Path('./results/')
-N_TRAIN_STEPS = 2000000
+N_TRAIN_STEPS = 1000000
 FS = 15
 N_EXCLUDE = 20
 TOTAL_N = 40
 
+#this needs to be copied over from wbrarl.py
 COEF_DICT = {'HalfCheetah-v3': {'mass': [0.2, 0.3, 0.4, 0.5, 1.5, 2.0, 2.5, 3.0],
                                 'friction': [0.05, 0.1, 0.2, 0.3, 1.3, 1.5, 1.7, 1.9]},
              'Hopper-v3': {'mass': [0.2, 0.3, 0.4, 0.5, 1.05, 1.1, 1.15, 1.2],
                            'friction': [0.2, 0.3, 0.4, 0.5, 1.4, 1.6, 1.8, 2.0]},
+             'Simglucose': {'kp1': [0.4, 0.5, 0.6, 0.7, 1.3, 1.4, 1.5, 1.6],
+                            'ka1': [0.4, 0.5, 0.6, 0.7, 1.3, 1.4, 1.5, 1.6]},
+             'Cancer': {'gamma': [0.3, 0.4, 0.5, 0.6, 1.66, 2, 2.5, 3.33],
+                        'lambda_p': [0.3, 0.4, 0.5, 0.6, 1.66, 2, 2.5, 3.33]},
              }
 
 
@@ -27,9 +31,31 @@ def get_env_name(names):
         env_name = 'HalfCheetah-v3'
     elif 'Hopper' in names[0]:
         env_name = 'Hopper-v3'
+    elif 'Simglucose' in names[0]:
+        env_name = 'Simglucose'
+    elif 'Cancer' in names[0]:
+        env_name = 'Cancer'
     else:
         raise NotImplementedError
     return env_name
+
+
+def get_fs(names):
+    if 'Cheetah' in names[0]:
+        f1 = 'mass'
+        f2 = 'friction'
+    elif 'Hopper' in names[0]:
+        f1 = 'mass'
+        f2 = 'friction'
+    elif 'Simglucose' in names[0]:
+        f1 = 'kp1'
+        f2 = 'ka1'
+    elif 'Cancer' in names[0]:
+        f1 = 'gamma'
+        f2 = 'lambda_p'
+    else:
+        raise NotImplementedError
+    return f1, f2
 
 
 def get_learning_curves(fnames):
@@ -128,39 +154,6 @@ def annotate_heatmap(im, data=None,
     return texts
 
 
-def plot_learning_curves(results_names):
-
-    env_name = get_env_name(results_names)
-
-    ys = []
-    for name in results_names:
-        ys.append(get_learning_curves(name))
-
-    fig = plt.figure()
-    colors = ['royalblue', 'firebrick', 'darkorange']
-    labels = ['RL', 'RARL', 'Latent/Action WB-RARL']
-
-    for i, y in enumerate(ys):
-        x = np.linspace(1, N_TRAIN_STEPS, num=len(y[0]))
-        y_mean = np.mean(y, axis=0)
-        plt.plot(x, y_mean, color=colors[i])
-
-    plt.legend(labels[:len(results_names)], fontsize=FS-2, loc='lower right')
-
-    for i, y in enumerate(ys):
-        x = np.linspace(1, N_TRAIN_STEPS, num=len(y[0]))
-        y_mean = np.mean(y, axis=0)
-        y_sem = stats.sem(y, axis=0)
-        plt.fill_between(x, y_mean-y_sem, y_mean+y_sem, color=colors[i], alpha=0.2)
-
-    plt.title(env_name.replace('-v3', '') + f', n={TOTAL_N - N_EXCLUDE}', fontsize=FS)
-    plt.ylabel('Reward per Episode', fontsize=FS)
-    plt.grid(alpha=0.4)
-    plt.show()
-
-    fig.savefig(f"./{env_name.replace('-v3', '')}_train.pdf", format='pdf', bbox_inches='tight')
-
-
 def plot_and_print_eval(eval_names, do_cbar=True):
 
     eval_results = []
@@ -183,11 +176,12 @@ def plot_and_print_eval(eval_names, do_cbar=True):
             all_hm_means.append([np.mean(hm) for hm in hmaps])
 
     env_name = get_env_name(eval_names)
+    f1, f2 = get_fs(eval_names)
 
-    mass_vals = COEF_DICT[env_name]['mass']
-    friction_vals = COEF_DICT[env_name]['friction']
-    xvals = [str(v) + 'x mass' for v in mass_vals]
-    yvals = [str(v) + 'x fric' for v in friction_vals]
+    mass_vals = COEF_DICT[env_name][f1]
+    friction_vals = COEF_DICT[env_name][f2]
+    xvals = [str(v) + f'x {f1}' for v in mass_vals]
+    yvals = [str(v) + f'x {f2}' for v in friction_vals]
     titles = ['RL', 'RARL', 'Latent/Action WB-RARL']
     all_min = min([np.min(er) for er in eval_results])
     all_max = max([np.max(er) for er in eval_results])
@@ -230,6 +224,7 @@ def plot_and_print_eval(eval_names, do_cbar=True):
 def plot_learning_curves_and_row_col_means(results_names, eval_names, errbar=True):
 
     env_name = get_env_name(results_names)
+    f1, f2 = get_fs(eval_names)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     colors = ['royalblue', 'firebrick', 'darkorange']
@@ -283,30 +278,30 @@ def plot_learning_curves_and_row_col_means(results_names, eval_names, errbar=Tru
     colmeans = np.mean(all_colmeans, axis=1)
     colsems = stats.sem(all_colmeans, axis=1)
 
-    mass_vals = COEF_DICT[env_name]['mass']
-    friction_vals = COEF_DICT[env_name]['friction']
+    mass_vals = COEF_DICT[env_name][f1]
+    friction_vals = COEF_DICT[env_name][f2]
     xlbls = [''] + [str(v) + 'x' for v in mass_vals]
     ylbls = [''] + [str(v) + 'x' for v in friction_vals]
     xvals = list(range(rowmeans.shape[1]))
 
     if errbar:
         for i in range(len(rowmeans)):
-            axes[1].errorbar(xvals, rowmeans[i], rowsems[i], color=colors[i], fmt='s', lw=4, capsize=8, capthick=4,
+            axes[1].errorbar(xvals, colmeans[i], colsems[i], color=colors[i], fmt='s', lw=4, capsize=8, capthick=4,
                              alpha=0.5)
-            axes[2].errorbar(xvals, colmeans[i], colsems[i], color=colors[i], fmt='s', lw=4, capsize=8, capthick=4,
+            axes[2].errorbar(xvals, rowmeans[i], rowsems[i], color=colors[i], fmt='s', lw=4, capsize=8, capthick=4,
                              alpha=0.5)
 
     else:
         for i in range(len(rowmeans)):
-            axes[1].plot(xvals, rowmeans[i], color=colors[i])
-            axes[1].fill_between(xvals, rowmeans[i] - rowsems[i], rowmeans[i] + rowsems[i], color=colors[i], alpha=0.2)
-            axes[2].plot(xvals, colmeans[i], color=colors[i])
-            axes[2].fill_between(xvals, colmeans[i] - colsems[i], colmeans[i] + colsems[i], color=colors[i], alpha=0.2)
+            axes[1].plot(xvals, colmeans[i], color=colors[i])
+            axes[1].fill_between(xvals, colmeans[i] - colsems[i], colmeans[i] + colsems[i], color=colors[i], alpha=0.2)
+            axes[2].plot(xvals, rowmeans[i], color=colors[i])
+            axes[2].fill_between(xvals, rowmeans[i] - rowsems[i], rowmeans[i] + rowsems[i], color=colors[i], alpha=0.2)
 
     axes[1].set_xticklabels(xlbls)
     axes[2].set_xticklabels(ylbls)
-    axes[1].set_xlabel('Mass Multiplier', fontsize=FS)
-    axes[2].set_xlabel('Friction Multiplier', fontsize=FS)
+    axes[1].set_xlabel(f'{f1.title()} Multiplier', fontsize=FS)
+    axes[2].set_xlabel(f'{f2.title()} Multiplier', fontsize=FS)
     axes[1].set_title(env_name.replace('-v3', '') + f' Test, n={TOTAL_N - N_EXCLUDE}', fontsize=FS+2)
     axes[2].set_title(env_name.replace('-v3', '') + f' Test, n={TOTAL_N - N_EXCLUDE}', fontsize=FS+2)
     axes[1].grid(alpha=0.4)
@@ -325,6 +320,14 @@ half_cheetah_results_names = [
     'agent_control_HalfCheetah-v3_2000000_*_rewards',
     'agent_rarl_HalfCheetah-v3_2000000_id=*_rewards',
     'agent_lat_act_rarl_HalfCheetah-v3_2000000_id=*_rewards']
+simglucose_results_names = [
+    'agent_control_Simglucose_1000000_*_rewards',
+    'agent_rarl_Simglucose_1000000_id=*_rewards',
+    'agent_lat_act_rarl_Simglucose_1000000_id=*_rewards']
+cancer_results_names = [
+    'agent_control_Cancer_1000000_*_rewards',
+    'agent_rarl_Cancer_1000000_id=*_rewards',
+    'agent_lat_act_rarl_Cancer_1000000_id=*_rewards']
 
 half_cheetah_eval_names = ['best_agent_control_HalfCheetah-v3_2000000_id=*',
                            'best_agent_rarl_HalfCheetah-v3_2000000_id=*',
@@ -332,11 +335,22 @@ half_cheetah_eval_names = ['best_agent_control_HalfCheetah-v3_2000000_id=*',
 hopper_eval_names = ['best_agent_control_Hopper-v3_2000000_id=*',
                      'best_agent_rarl_Hopper-v3_2000000_id=*',
                      'best_agent_lat_act_rarl_Hopper-v3_2000000_id=*']
+simglucose_eval_names = ['best_agent_control_Simglucose_1000000_id=*',
+                     'best_agent_rarl_Simglucose_1000000_id=*',
+                     'best_agent_lat_act_rarl_Simglucose_1000000_id=*']
+cancer_eval_names = ['best_agent_control_Cancer_1000000_id=*',
+                     'best_agent_rarl_Cancer_1000000_id=*',
+                     'best_agent_lat_act_rarl_Cancer_1000000_id=*']
 
-plot_learning_curves(half_cheetah_results_names)
-plot_and_print_eval(half_cheetah_eval_names)
-plot_learning_curves_and_row_col_means(half_cheetah_results_names, half_cheetah_eval_names)
 
-plot_learning_curves(hopper_results_names)
-plot_and_print_eval(hopper_eval_names)
-plot_learning_curves_and_row_col_means(hopper_results_names, hopper_eval_names)
+# plot_and_print_eval(half_cheetah_eval_names)
+# plot_learning_curves_and_row_col_means(half_cheetah_results_names, half_cheetah_eval_names)
+#
+# plot_and_print_eval(hopper_eval_names)
+# plot_learning_curves_and_row_col_means(hopper_results_names, hopper_eval_names)
+
+# plot_and_print_eval(simglucose_eval_names)
+# plot_learning_curves_and_row_col_means(simglucose_results_names, simglucose_eval_names)
+
+# plot_and_print_eval(cancer_eval_names)
+# plot_learning_curves_and_row_col_means(cancer_results_names, cancer_eval_names)
