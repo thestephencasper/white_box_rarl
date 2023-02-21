@@ -1,0 +1,31 @@
+cd /mnt/align2_drive/scasper/white_box_rarl
+python -m venv ../wba_env
+source /mnt/align2_drive/scasper/wba_env/bin/activate
+python -m pip install numpy matplotlib gym==0.19.0 patchelf mujoco-py>=2.1 stable-baselines3
+python -m pip install torch --extra-index-url https://download.pytorch.org/whl/cu116
+python -m pip install simglucose
+mkdir models
+mkdir results
+
+cd /mnt/align2_drive/scasper/white_box_rarl
+python -m venv ../wba_env
+# bash wbrarl_run.sh
+# python wbrarl_plotting.py
+
+
+
+
+
+
+
+
+
+
+# Cancer env
+from cancer.py import EnvCancer
+
+cancer = EnvCancer()
+cancer.reset()
+state = cancer.observe() # length 4: C, P, Q, Q_p
+terminated = cancer.is_done()
+reward, state = cancer.transition()
