@@ -4,6 +4,15 @@ source /mnt/align2_drive/scasper/wba_env/bin/activate
 python -m pip install numpy matplotlib gym==0.19.0 patchelf mujoco-py>=2.1 stable-baselines3
 python -m pip install torch --extra-index-url https://download.pytorch.org/whl/cu116
 python -m pip install simglucose
+# ---TWK NOTES---
+# stable-baselines3 contrib needs stable-baselines to be at it's most up-to-date to install properly
+# complicating this fact is that setuptools introduced a breaking error post v65.5.0 that throws an
+#  error when installing these packages... So we need to account for this by enforcing setuptools to 
+#  be of the right version (for now...)
+python -m pip install setuptools==65.5.0
+python -m pip install git+https://github.com/DLR-RM/stable-baselines3
+python -m pip install git+https://github.com/Stable-Baselines-Team/stable-baselines3-contrib
+
 mkdir models
 mkdir results
 
