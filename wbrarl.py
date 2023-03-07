@@ -285,7 +285,9 @@ class RARLEnv(gym.Wrapper):
                     # LSTM hidden state aliased as `latent_pi_val`
                     if self.lstm_states is None: # Double checking that we have a value for the LSTM hidden state...
                         _, lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=self.episode_starts, deterministic=False)
-                    latent_pi_val = copy.deepcopy(lstm_states[0])
+                    else:
+                        lstm_states = copy.deepcopy(self.lstm_states)
+                    latent_pi_val = lstm_states[0]
                 else:
                     features = self.agent.policy.extract_features(tens_ob)
                     latent_pi_val, _ = self.agent.policy.mlp_extractor(features)
