@@ -262,7 +262,7 @@ class RARLEnv(gym.Wrapper):
         if self.args.lstm:
             self.adv_lstm_states = None
             self.agent_action, self.adv_lstm_states = self.agent.predict(self.observation, state=self.adv_lstm_states, episode_start=self.episode_starts, deterministic=True)
-        else;
+        else:
             self.agent_action = self.agent.predict(self.observation, deterministic=True)[0]
         return self.get_adv_obs(self.agent_action)
 
@@ -555,7 +555,10 @@ def train_control(args):
     random.seed(sd)
     env = VecNormalize(SubprocVecEnv([make_env(args, sd + i) for i in range(args.n_envs)]), norm_reward=False)
     eval_env = VecNormalize(SubprocVecEnv([make_env(args, 42)]), norm_reward=False)
-    policy = args.alg('MlpPolicy', env, device=args.device, seed=sd, **args.hypers[args.env])
+    if args.lstm:
+        policy = args.alg('MlpLstmPolicy', env, device=args.device, seed=sd, **args.hypers[args.env])
+    else:
+        policy = args.alg('MlpPolicy', env, device=args.device, seed=sd, **args.hypers[args.env])
     best_mean_reward = -np.inf
     savename = f'best_agent_control_{args.env}_{args.n_train}_id={args.id}'
 
