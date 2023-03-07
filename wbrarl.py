@@ -33,7 +33,7 @@ for i in range(1, 11):
         )
 
 
-LAST_LAYER_DIM = 256
+LAST_LAYER_DIM = 64
 LSTM_LAYER_DIM = 128
 
 HYPERS_SAC = {'Hopper-v3': {'learning_starts': 4000, 'learning_rate': 0.0002},
@@ -181,16 +181,17 @@ class RARLEnv(gym.Wrapper):
         self.val = 'val' in self.args.experiment_type
         self.observation = None
         self.agent_action = None
-        self.agent_ckpt = agent_ckp
+        self.agent_ckpt = agent_ckpt
         if isinstance(adv_ckpts, str):
             adv_ckpts = [adv_ckpts]
         self.adv_ckpts = adv_ckpts
 
         self.lstm_states = None
+        self.adv_lstm_states = None
 
         if self.args.lstm:  # Initialize LSTM parameters
             num_envs = 1 ## TWK ?? Just guessing here...
-            episode
+            self.episode_starts = np.ones((num_envs,), dtype=bool)
 
         if mode == 'agent':
             self.agent_mode()
@@ -216,7 +217,10 @@ class RARLEnv(gym.Wrapper):
         if self.agent_ckpt:
             self.agent = self.args.alg.load(self.args.model_dir + self.agent_ckpt, device='cpu')
         else:
-            self.agent = self.args.alg('MlpPolicy', self, device='cpu', seed=self.sd, **self.args.hypers[self.args.env])
+            if self.args.lstm:
+                self.agent = self.args.alg('MlpLstmPolicy', self, device='cpu', seed=self.sd, **self.args.hypers[self.args.env])
+            else:
+                self.agent = self.args.alg('MlpPolicy', self, device='cpu', seed=self.sd, **self.args.hypers[self.args.env])
 
         self.step = self.step_agent
         self.reset = self.reset_agent
@@ -261,7 +265,8 @@ class RARLEnv(gym.Wrapper):
         self.observation = self.env.reset()
         if self.args.lstm:
             self.adv_lstm_states = None
-            self.agent_action, self.adv_lstm_states = self.agent.predict(self.observation, state=self.adv_lstm_states, episode_start=self.episode_starts, deterministic=True)
+            agent_action, self.lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=self.episode_starts, deterministic=True)
+            self.agent_action = agent_action[0]
         else:
             self.agent_action = self.agent.predict(self.observation, deterministic=True)[0]
         return self.get_adv_obs(self.agent_action)
@@ -278,14 +283,16 @@ class RARLEnv(gym.Wrapper):
             else:
                 if self.args.lstm:
                     # LSTM hidden state aliased as `latent_pi_val`
-                    if self.lstm_states is not None: # Double checking that we have a value for the LSTM hidden state...
-                        latent_pi_val = copy(self.lstm_states)  
-                    else:
-                        _, latent_pi_val = self.agent.predict(self.observation, deterministic=False)
+                    if self.lstm_states is None: # Double checking that we have a value for the LSTM hidden state...
+                        _, lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=self.episode_starts, deterministic=False)
+                    latent_pi_val = copy.deepcopy(lstm_states[0])
                 else:
                     features = self.agent.policy.extract_features(tens_ob)
                     latent_pi_val, _ = self.agent.policy.mlp_extractor(features)
-            self.agent_latent = latent_pi_val.detach().numpy()
+            if not isinstance(latent_pi_val, np.ndarray):
+                self.agent_latent = latent_pi_val.detach().numpy()
+            else:
+                self.agent_latent = latent_pi_val
             obs['lat'] = np.squeeze(self.agent_latent)
         if self.act:
             obs['act'] = agent_action
@@ -296,7 +303,8 @@ class RARLEnv(gym.Wrapper):
     def step_agent(self, agent_action):
         adv_obs = self.get_adv_obs(agent_action)
         if self.args.lstm:
-            adv_action, _ = self.advs[self.adv_i].predict(adv_obs, state=self.adv_lstm_states, episode_start=episode_starts, deterministic=False)
+            adv_action, self.adv_lstm_states = self.advs[self.adv_i].predict(adv_obs, state=self.adv_lstm_states, episode_start=self.episode_starts, deterministic=False)
+            adv_action = adv_action[0]
         else:
             adv_action = self.advs[self.adv_i].predict(adv_obs, deterministic=False)[0]
         if self.args.perturb_style == 'body':
@@ -313,7 +321,8 @@ class RARLEnv(gym.Wrapper):
         norm_penalty = args.lam * np.mean(np.abs(adv_action))
         adv_reward = -1 * reward - norm_penalty
         if self.args.lstm:
-            self.agent_action, self.lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=episode_starts, deterministic=False)
+            agent_action, self.lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=self.episode_starts, deterministic=False)
+            self.agent_action = agent_action[0]
         else:
             self.agent_action = self.agent.predict(self.observation, deterministic=False)[0]
         if self.args.perturb_style == 'action':
@@ -405,6 +414,7 @@ def simple_eval(policy, eval_env, n_episodes, lstm=False):
         while not done:
             if lstm:
                 action, lstm_states = policy.predict(observation=observation, state=lstm_states, episode_start=episode_starts, deterministic=False)
+                action = action[0]
             else:
                 action = policy.predict(observation=observation, deterministic=False)[0]
             observation, reward, done, infos = eval_env.step(action)
@@ -435,11 +445,17 @@ def train_rarl(args):
     adv_envs_raw = [SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv, 'adv', sd + i)
                                    for i in range(args.n_envs)]) for _ in range(args.n_advs)]
     adv_envs = [VecNormalize(adv_envs_raw[j], norm_reward=False) for j in range(args.n_advs)]
-    adv_policies = [args.alg('MultiInputPolicy', adv_envs[j], device=args.device, seed=sd, **args.adv_hypers[args.env]) for j in range(args.n_advs)]
+    if args.lstm:
+        adv_policies = [args.alg('MultiInputLstmPolicy', adv_envs[j], device=args.device, seed=sd, **args.adv_hypers[args.env]) for j in range(args.n_advs)]
+    else:
+        adv_policies = [args.alg('MultiInputPolicy', adv_envs[j], device=args.device, seed=sd, **args.adv_hypers[args.env]) for j in range(args.n_advs)]
     agent_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv, 'agent', sd + i)
                                    for i in range(args.n_envs)])
     agent_env = VecNormalize(agent_env_raw, norm_reward=False)
-    agent_policy = args.alg('MlpPolicy', agent_env, device=args.device, seed=sd, **args.hypers[args.env])
+    if args.lstm:
+        agent_policy = args.alg('MlpLstmPolicy', agent_env, device=args.device, seed=sd, **args.hypers[args.env])
+    else:
+        agent_policy = args.alg('MlpPolicy', agent_env, device=args.device, seed=sd, **args.hypers[args.env])
     last_saved_agent = 'agent_' + get_save_suff(args, 0)
     agent_policy.save(args.model_dir + last_saved_agent + '.zip')
     adv_eval_envs_raw = [SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv, 'adv', 42)])
