@@ -12,13 +12,14 @@ import torch
 import gym
 from stable_baselines3.ppo import PPO
 from stable_baselines3.sac import SAC
+from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecFrameStack
 from stable_baselines3.common.utils import set_random_seed
 import warnings
 from gym.envs.registration import register
 from cancer import EnvCancer
-# import warnings
-# warnings.filterwarnings("ignore")
+import warnings
+warnings.filterwarnings("ignore")
 
 
 # register the 30 simglucose envs
@@ -33,6 +34,7 @@ for i in range(1, 11):
 
 
 LAST_LAYER_DIM = 256
+LSTM_LAYER_DIM = 128
 
 HYPERS_SAC = {'Hopper-v3': {'learning_starts': 4000, 'learning_rate': 0.0002},
               'Simglucose': {'batch_size': 512, 'learning_starts': 1000, 'learning_rate': 3e-4},
@@ -54,6 +56,24 @@ HYPERS_PPO = {'HalfCheetah-v3': {'batch_size': 64,
                              'policy_kwargs': {'log_std_init': 0.0, 'ortho_init': True,
                                                'activation_fn': torch.nn.ReLU,
                                                'net_arch': [dict(pi=[64, 64], vf=[64, 64])]}}}
+LSTM_HYPERS_PPO = {'HalfCheetah-v3': {'batch_size': 64,
+                                 'ent_coef': 0.0025,
+                                 'n_steps': 128,  # orig was 512, made smaller because n_envs is high
+                                 'gamma': 0.98,
+                                 'learning_rate': 2.0633e-05,
+                                 'gae_lambda': 0.92,
+                                 'n_epochs': 12,  # orig was 20
+                                 'max_grad_norm': 0.5,
+                                 'vf_coef': 0.58096,
+                                 'clip_range': 0.06,
+                                 'policy_kwargs': {'log_std_init': -2.0, 'ortho_init': False,
+                                              'activation_fn': torch.nn.ReLU,
+                                              'net_arch': [dict(pi=[256, 256], vf=[256, 256])]}},
+              'Simglucose': {'batch_size': 512, 'n_epochs': 5,
+                             'policy_kwargs': {'log_std_init': 0.0, 'ortho_init': True,
+                                               'activation_fn': torch.nn.ReLU,
+                                               'net_arch': [dict(pi=[64, 64], vf=[64, 64])],
+                                               'lstm_hidden_size': LSTM_LAYER_DIM}}}
 ADV_HYPERS_SAC = {'Hopper-v3': {'ent_coef': 0.15, 'learning_starts': 4000},
                   'Simglucose': {'learning_starts': 4000},
                   'Cancer': {'learning_starts': 4000}}
@@ -94,6 +114,8 @@ def parse_args():
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--mode', type=str, default='train')  # mode \in ['train', 'eval']
     parser.add_argument('--perturb_style', type=str, default='action')  # 'body' or 'action' depending on what the adversary perturbs
+    parser.add_argument('--lstm_policy', dest='lstm', action='store_true')
+    parser.set_defaults(lstm=False)
 
     args = parser.parse_args()
     return args
@@ -109,7 +131,7 @@ class SimGlucoseEnv(gym.Wrapper):
 
     def __init__(self, args):
         self.all_envs = [gym.make(f'simglucose-child{j}-v0') for j in range(1, 11)] + [gym.make(f'simglucose-adolescent{j}-v0') for j in range(1, 11)] + [gym.make(f'simglucose-adult{j}-v0') for j in range(1, 11)]
-        self.env = self.all_envs[11]  # 11 seemed like an easy one from one experiment I did
+        self.env = self.all_envs[21]  # 11 seemed like an easy one from one experiment I did  ## (TWK) This is for a single adolescent... --> Would be better to maybe isolate only with adults at first?
         self.args = args
         self.reset()
         self.n_steps = 0
@@ -159,10 +181,16 @@ class RARLEnv(gym.Wrapper):
         self.val = 'val' in self.args.experiment_type
         self.observation = None
         self.agent_action = None
-        self.agent_ckpt = agent_ckpt
+        self.agent_ckpt = agent_ckp
         if isinstance(adv_ckpts, str):
             adv_ckpts = [adv_ckpts]
         self.adv_ckpts = adv_ckpts
+
+        self.lstm_states = None
+
+        if self.args.lstm:  # Initialize LSTM parameters
+            num_envs = 1 ## TWK ?? Just guessing here...
+            episode
 
         if mode == 'agent':
             self.agent_mode()
@@ -179,8 +207,12 @@ class RARLEnv(gym.Wrapper):
                          for i in range(args.n_advs)]
         else:
             dummy_adv_env = DummyAdvEnv(copy.deepcopy(self.env), self.lat, self.act, self.val, self.get_adv_action_space())
-            self.advs = [self.args.alg('MultiInputPolicy', dummy_adv_env, seed=self.sd, device='cpu', **self.args.adv_hypers[self.args.env])
+            if self.args.lstm:
+                self.advs = [self.args.alg('MultiInputLstmPolicy', dummy_adv_env, seed=self.sd, device='cpu', **self.args.adv_hypers[self.args.env])
                         for _ in range(args.n_advs)]
+            else:
+                self.advs = [self.args.alg('MultiInputPolicy', dummy_adv_env, seed=self.sd, device='cpu', **self.args.adv_hypers[self.args.env])
+                            for _ in range(args.n_advs)]
         if self.agent_ckpt:
             self.agent = self.args.alg.load(self.args.model_dir + self.agent_ckpt, device='cpu')
         else:
@@ -195,8 +227,12 @@ class RARLEnv(gym.Wrapper):
         # get observation space, action space, agents, step, and reset
         obs_dict = {'ob': self.env.observation_space}
         if self.lat:
-            obs_dict['lat'] = gym.spaces.Box(np.float32(-np.inf * np.ones(LAST_LAYER_DIM)),
-                                             np.float32(np.inf * np.ones(LAST_LAYER_DIM)))
+            if self.args.lstm:
+                obs_dict['lat'] = gym.spaces.Box(np.float32(-np.inf * np.ones(LSTM_LAYER_DIM)),
+                                                np.float32(np.inf * np.ones(LSTM_LAYER_DIM)))
+            else:
+                obs_dict['lat'] = gym.spaces.Box(np.float32(-np.inf * np.ones(LAST_LAYER_DIM)),
+                                                np.float32(np.inf * np.ones(LAST_LAYER_DIM)))
         if self.act:
             obs_dict['act'] = self.env.action_space
         if self.val:
@@ -206,7 +242,10 @@ class RARLEnv(gym.Wrapper):
         if self.agent_ckpt:
             self.agent = self.args.alg.load(self.args.model_dir + self.agent_ckpt, device='cpu')
         else:
-            self.agent = self.args.alg('MlpPolicy', self.env, device='cpu', seed=self.sd, **self.args.hypers[self.args.env])
+            if self.args.lstm:
+                self.agent = self.args.alg('MlpLstmPolicy', self.env, device='cpu', seed=self.sd, **self.args.hypers[self.args.env])
+            else:
+                self.agent = self.args.alg('MlpPolicy', self.env, device='cpu', seed=self.sd, **self.args.hypers[self.args.env])
 
         self.step = self.step_adv
         self.reset = self.reset_adv
@@ -214,11 +253,17 @@ class RARLEnv(gym.Wrapper):
     def reset_agent(self):
         self.observation = self.env.reset()
         self.adv_i = random.randint(0, len(self.advs)-1)
+        if self.args.lstm:
+            self.lstm_states = None
         return self.observation
 
     def reset_adv(self):
         self.observation = self.env.reset()
-        self.agent_action = self.agent.predict(self.observation, deterministic=True)[0]
+        if self.args.lstm:
+            self.adv_lstm_states = None
+            self.agent_action, self.adv_lstm_states = self.agent.predict(self.observation, state=self.adv_lstm_states, episode_start=self.episode_starts, deterministic=True)
+        else;
+            self.agent_action = self.agent.predict(self.observation, deterministic=True)[0]
         return self.get_adv_obs(self.agent_action)
 
     def get_adv_obs(self, agent_action):
@@ -231,8 +276,15 @@ class RARLEnv(gym.Wrapper):
             if self.args.alg == SAC:
                 latent_pi_val = self.agent.policy.actor.latent_pi(tens_ob)
             else:
-                features = self.agent.policy.extract_features(tens_ob)
-                latent_pi_val, _ = self.agent.policy.mlp_extractor(features)
+                if self.args.lstm:
+                    # LSTM hidden state aliased as `latent_pi_val`
+                    if self.lstm_states is not None: # Double checking that we have a value for the LSTM hidden state...
+                        latent_pi_val = copy(self.lstm_states)  
+                    else:
+                        _, latent_pi_val = self.agent.predict(self.observation, deterministic=False)
+                else:
+                    features = self.agent.policy.extract_features(tens_ob)
+                    latent_pi_val, _ = self.agent.policy.mlp_extractor(features)
             self.agent_latent = latent_pi_val.detach().numpy()
             obs['lat'] = np.squeeze(self.agent_latent)
         if self.act:
@@ -243,7 +295,10 @@ class RARLEnv(gym.Wrapper):
 
     def step_agent(self, agent_action):
         adv_obs = self.get_adv_obs(agent_action)
-        adv_action = self.advs[self.adv_i].predict(adv_obs, deterministic=False)[0]
+        if self.args.lstm:
+            adv_action, _ = self.advs[self.adv_i].predict(adv_obs, state=self.adv_lstm_states, episode_start=episode_starts, deterministic=False)
+        else:
+            adv_action = self.advs[self.adv_i].predict(adv_obs, deterministic=False)[0]
         if self.args.perturb_style == 'body':
             self.adv_to_xfrc(adv_action)
         if self.args.perturb_style == 'action':
@@ -257,7 +312,10 @@ class RARLEnv(gym.Wrapper):
         self.observation, reward, done, infos = self.env.step(self.agent_action)
         norm_penalty = args.lam * np.mean(np.abs(adv_action))
         adv_reward = -1 * reward - norm_penalty
-        self.agent_action = self.agent.predict(self.observation, deterministic=False)[0]
+        if self.args.lstm:
+            self.agent_action, self.lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=episode_starts, deterministic=False)
+        else:
+            self.agent_action = self.agent.predict(self.observation, deterministic=False)[0]
         if self.args.perturb_style == 'action':
             self.agent_action += adv_action
             self.agent_action = np.clip(self.agent_action, self.env.action_space.low, self.env.action_space.high)
@@ -334,15 +392,21 @@ def get_save_suff(args, iter):
     return savename
 
 
-def simple_eval(policy, eval_env, n_episodes):
+def simple_eval(policy, eval_env, n_episodes, lstm=False):
     # gets the mean reward for an agent in an env over n_episodes
     all_rewards = []
     observation = eval_env.reset()
+    if lstm:
+        lstm_states = None
+        episode_starts = np.ones((1,), dtype=bool)
     for _ in range(n_episodes):
         done = False
         ep_reward = 0.0
         while not done:
-            action = policy.predict(observation=observation, deterministic=False)[0]
+            if lstm:
+                action, lstm_states = policy.predict(observation=observation, state=lstm_states, episode_start=episode_starts, deterministic=False)
+            else:
+                action = policy.predict(observation=observation, deterministic=False)[0]
             observation, reward, done, infos = eval_env.step(action)
             done = done[0]
             ep_reward += reward[0]
@@ -563,14 +627,20 @@ if __name__ == '__main__':
     multiprocessing.set_start_method('spawn')
     args = parse_args()
 
-    if 'HalfCheetah' in args.env:
-        args.alg = PPO
-        args.hypers = HYPERS_PPO
+    if args.env in ['HalfCheetah', 'Simglucose']:
+        
+        if args.lstm:
+            args.alg = RecurrentPPO
+            args.hypers = LSTM_HYPERS_PPO
+        else:
+            args.alg = PPO
+            args.hypers = HYPERS_PPO
         args.adv_hypers = ADV_HYPERS_PPO
     else:
         args.alg = SAC
         args.hypers = HYPERS_SAC
         args.adv_hypers = ADV_HYPERS_SAC
+    ## ADD POINTERS FOR NEW PARAMS DICT FOR RECURRENT PPO
 
     if args.mode == 'eval':
         eval_agent_grid(args)
