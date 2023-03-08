@@ -232,8 +232,11 @@ class RARLEnv(gym.Wrapper):
         obs_dict = {'ob': self.env.observation_space}
         if self.lat:
             if self.args.lstm:
-                obs_dict['lat'] = gym.spaces.Box(np.float32(-np.inf * np.ones(LSTM_LAYER_DIM)),
-                                                np.float32(np.inf * np.ones(LSTM_LAYER_DIM)))
+                # We double the dimension of this addition because we're concatenating the separate LSTM
+                #  layers from both the actor and critic components of the agent when providing the 
+                #  privileged information to the adversary
+                obs_dict['lat'] = gym.spaces.Box(np.float32(-np.inf * np.ones(2*LSTM_LAYER_DIM)),
+                                                np.float32(np.inf * np.ones(2*LSTM_LAYER_DIM)))
             else:
                 obs_dict['lat'] = gym.spaces.Box(np.float32(-np.inf * np.ones(LAST_LAYER_DIM)),
                                                 np.float32(np.inf * np.ones(LAST_LAYER_DIM)))
@@ -287,7 +290,7 @@ class RARLEnv(gym.Wrapper):
                         _, lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=self.episode_starts, deterministic=False)
                     else:
                         lstm_states = copy.deepcopy(self.lstm_states)
-                    latent_pi_val = lstm_states[0]
+                    latent_pi_val = np.concatenate(lstm_states, axis=-1)
                 else:
                     features = self.agent.policy.extract_features(tens_ob)
                     latent_pi_val, _ = self.agent.policy.mlp_extractor(features)
