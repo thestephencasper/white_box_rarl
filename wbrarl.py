@@ -34,7 +34,7 @@ for i in range(1, 11):
 
 
 LAST_LAYER_DIM = 64
-LSTM_LAYER_DIM = 128
+LSTM_LAYER_DIM = 64
 
 HYPERS_SAC = {'Hopper-v3': {'learning_starts': 4000, 'learning_rate': 0.0002},
               'Simglucose': {'batch_size': 512, 'learning_starts': 1000, 'learning_rate': 3e-4},
@@ -403,6 +403,8 @@ def get_save_suff(args, iter):
         savename = 'val_' + savename
     if 'lat' in args.experiment_type:
         savename = 'lat_' + savename
+    if args.lstm:
+        savename = 'lstm_' + savename
     return savename
 
 
@@ -445,6 +447,9 @@ def train_rarl(args):
     last_saved_agent = ''
     last_saved_adv = ''
     best_mean_reward = -np.inf
+
+    if not os.path.exists(args.results_dir):
+        os.mkdir(args.results_dir)
 
     # make envs and policies
     adv_envs_raw = [SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv, 'adv', sd + i)
@@ -570,6 +575,9 @@ def train_rarl(args):
 
 def train_control(args):
 
+    if not os.path.exists(args.results_dir):
+        os.mkdir(args.results_dir)
+
     # setup
     n_iters = (args.n_train // args.n_train_per_iter)
     sd = get_seed()
@@ -606,14 +614,23 @@ def train_control(args):
             sys.stdout.flush()
 
     # save
-    with open(args.results_dir + f'agent_control_{args.env}_{args.n_train}_id={args.id}' + '_rewards.pkl', 'wb') as f:
+    if args.lstm:
+        rewards_savename = args.results_dir + f'agent_lstm_control_{args.env}_{args.n_train}_id={args.id}' + '_rewards.pkl'
+        eval_savename = args.model_dir + f'agent_lstm_control_{args.env}_{args.n_train}_id={args.id}_eval_env'
+    else:
+        rewards_savename = args.results_dir + f'agent_control_{args.env}_{args.n_train}_id={args.id}' + '_rewards.pkl'
+        eval_savename = args.model_dir + f'agent_control_{args.env}_{args.n_train}_id={args.id}_eval_env'
+    with open(rewards_savename, 'wb') as f:
         pickle.dump(rewards, f)
-    eval_env.save(args.model_dir + f'agent_control_{args.env}_{args.n_train}_id={args.id}_eval_env')
+    eval_env.save(eval_savename)
     env.close()
     eval_env.close()
 
 
 def eval_agent_grid(args):
+
+    if not os.path.exists(args.results_dir):
+        os.mkdir(args.results_dir)
 
     # this function tests the performance of an adversary across different environments
     if args.env == 'Simglucose':
