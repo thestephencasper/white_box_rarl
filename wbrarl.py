@@ -36,9 +36,7 @@ for i in range(1, 11):
 LAST_LAYER_DIM = 64
 LSTM_LAYER_DIM = 64
 
-HYPERS_SAC = {'Hopper-v3': {'learning_starts': 4000, 'learning_rate': 0.0002},
-              'Simglucose': {'batch_size': 512, 'learning_starts': 1000, 'learning_rate': 3e-4},
-              'Cancer': {'batch_size': 256, 'learning_starts': 100, 'ent_coef': 0.0}}
+HYPERS_SAC = {'Hopper-v3': {'learning_starts': 4000, 'learning_rate': 0.0002}}
 HYPERS_PPO = {'HalfCheetah-v3': {'batch_size': 64,
                                  'ent_coef': 0.0025,
                                  'n_steps': 128,  # orig was 512, made smaller because n_envs is high
@@ -51,11 +49,11 @@ HYPERS_PPO = {'HalfCheetah-v3': {'batch_size': 64,
                                  'clip_range': 0.06,
                                  'policy_kwargs': {'log_std_init': -2.0, 'ortho_init': False,
                                               'activation_fn': torch.nn.ReLU,
-                                              'net_arch': [dict(pi=[256, 256], vf=[256, 256])]}},
+                                              'net_arch': dict(pi=[256, 256], vf=[256, 256])}},
               'Simglucose': {'batch_size': 512, 'n_epochs': 5,
                              'policy_kwargs': {'log_std_init': 0.0, 'ortho_init': True,
                                                'activation_fn': torch.nn.ReLU,
-                                               'net_arch': [dict(pi=[64, 64], vf=[64, 64])]}}}
+                                               'net_arch': dict(pi=[64, 64], vf=[64, 64])}}}
 LSTM_HYPERS_PPO = {'HalfCheetah-v3': {'batch_size': 64,
                                  'ent_coef': 0.0025,
                                  'n_steps': 128,  # orig was 512, made smaller because n_envs is high
@@ -91,6 +89,7 @@ COEF_DICT = {'HalfCheetah-v3': {'mass': [0.2, 0.3, 0.4, 0.5, 1.5, 2.0, 2.5, 3.0]
                         'lambda_p': [0.3, 0.4, 0.5, 0.6, 1.66, 2, 2.5, 3.33]},
              }
 
+np.set_printoptions(suppress=True)
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -170,7 +169,7 @@ class DummyAdvEnv(gym.Wrapper):
 class RARLEnv(gym.Wrapper):
     # this can be an env for either the protagonist or adversary depending on whether agent_mode or adv_mode is called
 
-    def __init__(self, env, args, agent_ckpt, adv_ckpts, mode):
+    def __init__(self, env, args, agent_ckpt, adv_ckpts, mode, obs_mean=0, obs_var=1):
 
         super().__init__(env)
         self.env = env
@@ -185,6 +184,8 @@ class RARLEnv(gym.Wrapper):
         if isinstance(adv_ckpts, str):
             adv_ckpts = [adv_ckpts]
         self.adv_ckpts = adv_ckpts
+        self.obs_mean = obs_mean
+        self.obs_var = obs_var
 
         self.lstm_states = None
         self.adv_lstm_states = None
@@ -286,6 +287,8 @@ class RARLEnv(gym.Wrapper):
             else:
                 if self.args.lstm:
                     # LSTM hidden state aliased as `latent_pi_val`
+                    ## NEED TO DOUBLE CHECK ABOUT NORMALIZATION OF THESE PARAMS... 
+                    ## DOESN'T SEEM TO BE AN ISSUE WITH THE ...policy.extract_features() method when not using RecurrentPPO...
                     if self.lstm_states is None: # Double checking that we have a value for the LSTM hidden state...
                         _, lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=self.episode_starts, deterministic=False)
                     else:
@@ -317,19 +320,22 @@ class RARLEnv(gym.Wrapper):
         if self.args.perturb_style == 'action':
             agent_action += adv_action
             agent_action = np.clip(agent_action, self.env.action_space.low, self.env.action_space.high)
-        return self.env.step(agent_action)
+        obs, reward, done, info = self.env.step(agent_action)
+        return obs, reward, done, info
 
     def step_adv(self, adv_action):
         if self.args.perturb_style == 'body':
             self.adv_to_xfrc(adv_action)
         self.observation, reward, done, infos = self.env.step(self.agent_action)
-        norm_penalty = args.lam * np.mean(np.abs(adv_action))
+        norm_penalty = self.args.lam * np.mean(np.abs(adv_action))
         adv_reward = -1 * reward - norm_penalty
         if self.args.lstm:
-            agent_action, self.lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=self.episode_starts, deterministic=False)
+            norm_obs = np.clip((self.observation - self.obs_mean) / np.sqrt(self.obs_var + 1e-8), -10, 10)
+            agent_action, self.lstm_states = self.agent.predict(norm_obs, state=self.lstm_states, episode_start=self.episode_starts, deterministic=False)
             self.agent_action = agent_action[0]
         else:
-            self.agent_action = self.agent.predict(self.observation, deterministic=False)[0]
+            norm_obs = np.clip((self.observation - self.obs_mean) / np.sqrt(self.obs_var + 1e-8), -10, 10)
+            self.agent_action = self.agent.predict(norm_obs, deterministic=False)[0]
         if self.args.perturb_style == 'action':
             self.agent_action += adv_action
             self.agent_action = np.clip(self.agent_action, self.env.action_space.low, self.env.action_space.high)
@@ -345,8 +351,7 @@ class RARLEnv(gym.Wrapper):
             raise NotImplementedError
         return gym.spaces.Box(-high_adv, high_adv)
 
-
-def make_rarl_env(wrapper, args, agent_ckpt, adv_ckpts, mode, rank):
+def make_rarl_env(wrapper, args, agent_ckpt, adv_ckpts, mode, obs_mean, obs_var, rank):
 
     def _init():
         if args.env == 'Simglucose':
@@ -355,7 +360,7 @@ def make_rarl_env(wrapper, args, agent_ckpt, adv_ckpts, mode, rank):
             gym_env = EnvCancer()
         else:
             gym_env = gym.make(args.env)
-        env = wrapper(gym_env, args, agent_ckpt, adv_ckpts, mode)
+        env = wrapper(gym_env, args, agent_ckpt, adv_ckpts, mode, obs_mean, obs_var)
         env.seed(rank)
         return env
 
@@ -447,19 +452,21 @@ def train_rarl(args):
     last_saved_agent = ''
     last_saved_adv = ''
     best_mean_reward = -np.inf
+    obs_mean = 0
+    obs_var = 1
 
     if not os.path.exists(args.results_dir):
         os.mkdir(args.results_dir)
 
     # make envs and policies
-    adv_envs_raw = [SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv, 'adv', sd + i)
+    adv_envs_raw = [SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv, 'adv', obs_mean, obs_var, sd + i)
                                    for i in range(args.n_envs)]) for _ in range(args.n_advs)]
     adv_envs = [VecNormalize(adv_envs_raw[j], norm_reward=False) for j in range(args.n_advs)]
     if args.lstm:
         adv_policies = [args.alg('MultiInputLstmPolicy', adv_envs[j], device=args.device, seed=sd, **args.adv_hypers[args.env]) for j in range(args.n_advs)]
     else:
         adv_policies = [args.alg('MultiInputPolicy', adv_envs[j], device=args.device, seed=sd, **args.adv_hypers[args.env]) for j in range(args.n_advs)]
-    agent_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv, 'agent', sd + i)
+    agent_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv, 'agent', obs_mean, obs_var, sd + i)
                                    for i in range(args.n_envs)])
     agent_env = VecNormalize(agent_env_raw, norm_reward=False)
     if args.lstm:
@@ -468,7 +475,8 @@ def train_rarl(args):
         agent_policy = args.alg('MlpPolicy', agent_env, device=args.device, seed=sd, **args.hypers[args.env])
     last_saved_agent = 'agent_' + get_save_suff(args, 0)
     agent_policy.save(args.model_dir + last_saved_agent + '.zip')
-    adv_eval_envs_raw = [SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv, 'adv', 42)])
+    adv_eval_envs_raw = [SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv,
+                                                      'adv', obs_mean, obs_var, 42)])
                          for _ in range(args.n_advs)]
     adv_eval_envs = [VecNormalize(adv_eval_envs_raw[j], norm_reward=False) for j in range(args.n_advs)]
     agent_eval_env_raw = SubprocVecEnv([make_env(args, 42)])
@@ -486,20 +494,26 @@ def train_rarl(args):
                 (args.perturb_style == 'action' and args.delta_action > 0.0)) and \
                 args.n_train_per_iter * i > args.start_adv_training:
 
-            # sync up the envs
+            obs_mean = agent_env.obs_rms.mean
+            obs_var = agent_env.obs_rms.var
+
             for adv_policy, adv_env, adv_eval_env in zip(adv_policies, adv_envs, adv_eval_envs):
-                adv_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv, 'adv', sd + i)
+                adv_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_adv,
+                                                           'adv', obs_mean, obs_var, sd + i)
                                              for i in range(args.n_envs)])
                 adv_env_state = adv_env.__getstate__()
                 adv_env.__setstate__(adv_env_state)
                 adv_env.set_venv(adv_env_raw)
                 adv_policy.env = adv_env
-                adv_eval_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, adv_policy, 'adv', 42)])
+                adv_eval_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, adv_policy,
+                                                                'adv', obs_mean, obs_var, 42)])
                 adv_eval_env.__setstate__(adv_env_state)
                 adv_eval_env.set_venv(adv_eval_env_raw)
 
-            # get performances before training
-            mean_rewards_pre = [simple_eval(adv_policy, adv_eval_envs[j], args.n_test_episodes) for j, adv_policy in enumerate(adv_policies)]
+            if (i - 1) % args.test_each == 0:
+                mean_rewards_pre = [simple_eval(adv_policy, adv_eval_envs[j], args.n_test_episodes) for j, adv_policy in enumerate(adv_policies)]
+            else:
+                mean_rewards_pre = 0
 
             # train
             for adv_policy in adv_policies:
@@ -508,7 +522,8 @@ def train_rarl(args):
             # sync up the envs
             for adv_policy, adv_env, adv_eval_env in zip(adv_policies, adv_envs, adv_eval_envs):
                 adv_env_state = adv_env.__getstate__()
-                adv_eval_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, adv_policy, 'adv', 42)])
+                adv_eval_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, adv_policy,
+                                                                'adv', obs_mean, obs_var, 42)])
                 adv_eval_env.__setstate__(adv_env_state)
                 adv_eval_env.set_venv(adv_eval_env_raw)
 
@@ -528,7 +543,8 @@ def train_rarl(args):
             adv_policy.save(args.model_dir + last_saved_advs[i_policy] + '.zip')
 
         # train agent
-        agent_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_advs, 'agent', sd + j)
+        agent_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, last_saved_agent, last_saved_advs,
+                                                     'agent', obs_mean, obs_var, sd + j)
                                        for j in range(args.n_envs)])
         # sync up envs
         agent_env_state = agent_env.__getstate__()
@@ -660,6 +676,62 @@ def eval_agent_grid(args):
         pickle.dump(all_mean_rewards, f)
 
 
+def eval_adv(args):
+
+    args.lam = 0
+    env_wrapper = RARLEnv
+    n_iters = (args.n_train // args.n_train_per_iter)
+    sd = get_seed()
+
+    assert args.agent_ckpt, 'Must give --agent_ckpt to test an agent'
+    assert args.env_ckpt, 'Must give --env_ckpt to test an agent'
+
+    agent_env = SubprocVecEnv([make_env(args, 42)])
+    agent_env = VecNormalize.load(args.model_dir + args.env_ckpt, agent_env)
+    obs_mean = agent_env.obs_rms.mean
+    obs_var = agent_env.obs_rms.var
+
+    adv_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, args.agent_ckpt, '',
+                                               'adv', obs_mean, obs_var, sd + i)
+                                 for i in range(args.n_envs)])
+    adv_eval_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, args.agent_ckpt, '',
+                                                    'adv', obs_mean, obs_var, 42)])
+    adv_env = VecNormalize(adv_env_raw, norm_reward=False)
+    adv_eval_env = VecNormalize(adv_eval_env_raw, norm_reward=False)
+
+    adv_env_state = adv_env.__getstate__()
+    agent_env_state = agent_env.__getstate__()
+    adv_env_state['obs_rms']['ob'] = agent_env_state['obs_rms']
+    adv_env_state['ret_rms'] = agent_env_state['ret_rms']
+    adv_env.__setstate__(adv_env_state)
+    adv_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, args.agent_ckpt, '',
+                                               'adv', obs_mean, obs_var, sd + i)
+                                 for i in range(args.n_envs)])
+    adv_env.set_venv(adv_env_raw)
+
+    adv_policy = args.alg('MultiInputPolicy', adv_env, device=args.device, seed=sd, **args.adv_hypers[args.env])
+
+    n_train_per_iter = args.n_train_per_iter + args.hypers[args.env].get('learning_starts', 0)
+
+    for i in range(1, n_iters + 1):
+
+        adv_policy.learn(n_train_per_iter)
+
+        if (i - 1) % args.test_each == 0:
+
+            adv_eval_env_raw = SubprocVecEnv([make_rarl_env(env_wrapper, args, args.agent_ckpt, '',
+                                                            'adv', obs_mean, obs_var, 42)])
+            adv_env_state = adv_env.__getstate__()
+            adv_eval_env.__setstate__(adv_env_state)
+            adv_eval_env.set_venv(adv_eval_env_raw)
+
+            mean_adv_reward = simple_eval(adv_policy, adv_eval_env, args.n_test_episodes)
+            print(f'adv eval id={args.id} mean_adv_reward:', mean_adv_reward)
+            sys.stdout.flush()
+
+    # TODO save
+
+
 if __name__ == '__main__':
 
     # I like to live dangerously
@@ -685,6 +757,8 @@ if __name__ == '__main__':
 
     if args.mode == 'eval':
         eval_agent_grid(args)
+    elif args.mode == 'eval_adv':
+        eval_adv(args)
     elif 'rarl' in args.experiment_type:
         train_rarl(args)
     elif args.experiment_type == 'ctrl':
