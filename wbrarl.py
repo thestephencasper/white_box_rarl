@@ -293,7 +293,7 @@ class RARLEnv(gym.Wrapper):
                         _, lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=self.episode_starts, deterministic=False)
                     else:
                         lstm_states = copy.deepcopy(self.lstm_states)
-                    latent_pi_val = np.squeeze(np.concatenate(lstm_states, axis=-1), axis=0) ## Need to remove an extraneous dimension here...
+                    latent_pi_val = torch.nn.functional.relu(torch.from_numpy(np.concatenate(lstm_states, axis=-1))).numpy() ## Need to apply activation fn here... *fingers crossed that this is the issue*
                 else:
                     features = self.agent.policy.extract_features(tens_ob)
                     latent_pi_val, _ = self.agent.policy.mlp_extractor(features)
