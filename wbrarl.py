@@ -66,11 +66,11 @@ LSTM_HYPERS_PPO = {'HalfCheetah-v3': {'batch_size': 64,
                                  'clip_range': 0.06,
                                  'policy_kwargs': {'log_std_init': -2.0, 'ortho_init': False,
                                               'activation_fn': torch.nn.ReLU,
-                                              'net_arch': [dict(pi=[256, 256], vf=[256, 256])]}},
+                                              'net_arch': dict(pi=[256, 256], vf=[256, 256])}},
               'Simglucose': {'batch_size': 512, 'n_epochs': 5,
                              'policy_kwargs': {'log_std_init': 0.0, 'ortho_init': True,
                                                'activation_fn': torch.nn.ReLU,
-                                               'net_arch': [dict(pi=[64, 64], vf=[64, 64])],
+                                               'net_arch': dict(pi=[64, 64], vf=[64, 64]),
                                                'lstm_hidden_size': LSTM_LAYER_DIM}}}
 ADV_HYPERS_SAC = {'Hopper-v3': {'ent_coef': 0.15, 'learning_starts': 4000},
                   'Simglucose': {'learning_starts': 4000},
@@ -293,7 +293,8 @@ class RARLEnv(gym.Wrapper):
                         _, lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=self.episode_starts, deterministic=False)
                     else:
                         lstm_states = copy.deepcopy(self.lstm_states)
-                    latent_pi_val = torch.nn.functional.relu(torch.from_numpy(np.concatenate(lstm_states, axis=-1))).numpy() ## Need to apply activation fn here... *fingers crossed that this is the issue*
+                    latent_pi_val = torch.nn.functional.tanh(torch.from_numpy(np.concatenate(lstm_states, axis=-1))).numpy() ## Need to apply activation fn here... *fingers crossed that this is the issue*
+                    # latent_pi_val = np.zeros((1, 2*LSTM_LAYER_DIM))
                 else:
                     features = self.agent.policy.extract_features(tens_ob)
                     latent_pi_val, _ = self.agent.policy.mlp_extractor(features)
