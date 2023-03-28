@@ -293,7 +293,7 @@ class RARLEnv(gym.Wrapper):
                         _, lstm_states = self.agent.predict(self.observation, state=self.lstm_states, episode_start=self.episode_starts, deterministic=False)
                     else:
                         lstm_states = copy.deepcopy(self.lstm_states)
-                    latent_pi_val = np.concatenate(lstm_states, axis=-1)
+                    latent_pi_val = np.squeeze(np.concatenate(lstm_states, axis=-1), axis=0) ## Need to remove an extraneous dimension here...
                 else:
                     features = self.agent.policy.extract_features(tens_ob)
                     latent_pi_val, _ = self.agent.policy.mlp_extractor(features)
