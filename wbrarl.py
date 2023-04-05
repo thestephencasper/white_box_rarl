@@ -606,7 +606,10 @@ def train_control(args):
     else:
         policy = args.alg('MlpPolicy', env, device=args.device, seed=sd, **args.hypers[args.env])
     best_mean_reward = -np.inf
-    savename = f'best_agent_control_{args.env}_{args.n_train}_id={args.id}'
+    if args.lstm:
+        savename = f'best_agent_lstm_control_{args.env}_{args.n_train}_id={args.id}'
+    else:
+        savename = f'best_agent_control_{args.env}_{args.n_train}_id={args.id}'
 
     # train
     rewards = []
@@ -715,7 +718,7 @@ def eval_adv(args):
     n_train_per_iter = args.n_train_per_iter + args.hypers[args.env].get('learning_starts', 0)
 
     for i in range(1, n_iters + 1):
-
+    
         adv_policy.learn(n_train_per_iter)
 
         if (i - 1) % args.test_each == 0:
